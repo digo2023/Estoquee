@@ -1,241 +1,176 @@
 import pandas as pd
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from datetime import datetime
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from datetime import time
 import os
 
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-SENHA = os.getenv("SENHA")
 
 ESTOQUE_FILE = "estoque.csv"
 LOG_FILE = "log.csv"
 
-usuarios_autorizados = set()
-
-# ================= MENU =================
-menu_admin = ReplyKeyboardMarkup([
+menu = ReplyKeyboardMarkup([
     ["📦 Estoque"],
     ["➕ Entrada", "➖ Saída"],
     ["🆕 Novo Produto", "❌ Remover Produto"],
     ["📊 Relatório"]
 ], resize_keyboard=True)
 
-menu_user = ReplyKeyboardMarkup([
-    ["🔐 Login"],
-    ["📦 Estoque"],
-    ["📊 Relatório"]
-], resize_keyboard=True)
-
-# ================= UTILS =================
 def is_admin(update):
     return str(update.message.chat_id) == str(CHAT_ID)
 
-def autorizado(user_id):
-    return user_id in usuarios_autorizados or str(user_id) == str(CHAT_ID)
-
-def carregar_estoque():
-    return pd.read_csv(ESTOQUE_FILE)
-
-def salvar_estoque(df):
-    df.to_csv(ESTOQUE_FILE, index=False)
-
-def salvar_log(registro):
-    log = pd.read_csv(LOG_FILE)
-    log = pd.concat([log, pd.DataFrame([registro])])
-    log.to_csv(LOG_FILE, index=False)
-
-# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_admin(update):
-        await update.message.reply_text("👑 Bem-vindo ADMIN", reply_markup=menu_admin)
-    else:
-        await update.message.reply_text("🔐 Faça login", reply_markup=menu_user)
+    await update.message.reply_text(
+        "Controle de Estoque - EXPRESS\n\nUso privado.",
+        reply_markup=menu
+    )
 
-# ================= LOGIN =================
-async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    context.user_data["login"] = True
-    await update.message.reply_text("Digite a senha:")
-
-# ================= ESTOQUE =================
 async def estoque(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not autorizado(update.message.chat_id):
-        return
-
-    df = carregar_estoque()
-    texto = "📦 ESTOQUE:\n\n"
+    df = pd.read_csv(ESTOQUE_FILE)
+    texto = "📦 Estoque:\n\n"
     for _, row in df.iterrows():
         texto += f"{row['produto']}: {row['quantidade']}\n"
-
     await update.message.reply_text(texto)
 
-# ================= BOTÕES PRODUTOS =================
-def gerar_botoes(df, acao):
-    botoes = []
-    for p in df["produto"]:
-        botoes.append([InlineKeyboardButton(p, callback_data=f"{acao}|{p}")])
-    return InlineKeyboardMarkup(botoes)
+async def novo_produto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Sem permissão.")
+        return
+    context.user_data["acao"] = "novo"
+    await update.message.reply_text("Digite o nome do novo produto:")
 
-# ================= ENTRADA =================
+async def remover_produto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("⛔ Sem permissão.")
+        return
+    context.user_data["acao"] = "remover"
+    await update.message.reply_text("Digite o nome do produto para remover:")
+
 async def entrada(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        await update.message.reply_text("⛔ Sem permissão.")
         return
-    context.user_data.clear()
-    df = carregar_estoque()
-    await update.message.reply_text("Selecione produto:", reply_markup=gerar_botoes(df, "entrada"))
+    context.user_data["acao"] = "entrada"
+    await update.message.reply_text("Digite: produto quantidade")
 
-# ================= SAÍDA =================
 async def saida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
+        await update.message.reply_text("⛔ Sem permissão.")
         return
-    context.user_data.clear()
-    df = carregar_estoque()
-    await update.message.reply_text("Selecione produto:", reply_markup=gerar_botoes(df, "saida"))
+    context.user_data["acao"] = "saida"
+    await update.message.reply_text("Digite: produto quantidade turno(A/B/C)")
 
-# ================= NOVO =================
-async def novo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    context.user_data.clear()
-    context.user_data["acao"] = "novo"
-    await update.message.reply_text("Digite nome do produto:")
-
-# ================= REMOVER =================
-async def remover(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update):
-        return
-    context.user_data.clear()
-    df = carregar_estoque()
-    await update.message.reply_text("Selecione produto:", reply_markup=gerar_botoes(df, "remover"))
-
-# ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    acao, produto = query.data.split("|")
-
-    if acao == "remover":
-        df = carregar_estoque()
-        df = df[df["produto"] != produto]
-        salvar_estoque(df)
-        await query.edit_message_text(f"❌ {produto} removido")
-        return
-
-    context.user_data["produto"] = produto
-    context.user_data["acao"] = acao
-
-    if acao == "saida":
-        # MOSTRA TURNOS
-        botoes = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Turno A", callback_data=f"turno|A")],
-            [InlineKeyboardButton("Turno B", callback_data=f"turno|B")],
-            [InlineKeyboardButton("Turno C", callback_data=f"turno|C")]
-        ])
-        await query.edit_message_text("Selecione o turno:", reply_markup=botoes)
-    else:
-        await query.edit_message_text(f"Digite quantidade para {produto}:")
-
-# ================= CALLBACK TURNO =================
-async def callback_turno(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    _, turno = query.data.split("|")
-
-    context.user_data["turno"] = turno
-    await query.edit_message_text(f"Turno {turno} selecionado.\nDigite quantidade:")
-
-# ================= PROCESSAR =================
 async def processar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = update.message.text.lower()
-    user_id = update.message.chat_id
+    try:
+        acao = context.user_data.get("acao")
 
-    # LOGIN
-    if context.user_data.get("login"):
-        if texto == SENHA:
-            usuarios_autorizados.add(user_id)
-            await update.message.reply_text("✅ Liberado", reply_markup=menu_user)
-        else:
-            await update.message.reply_text("❌ Senha incorreta")
-        context.user_data.clear()
-        return
+        # NOVO PRODUTO
+        if acao == "novo":
+            produto = update.message.text.strip().lower()
+            df = pd.read_csv(ESTOQUE_FILE)
 
-    if not autorizado(user_id):
-        return
+            if produto in df["produto"].values:
+                await update.message.reply_text("Produto já existe.")
+                return
 
-    # IGNORA BOTÕES
-    if texto in ["📦 estoque", "📊 relatório"]:
-        return
+            df = pd.concat([df, pd.DataFrame([{"produto": produto, "quantidade": 0}])])
+            df.to_csv(ESTOQUE_FILE, index=False)
 
-    # NOVO PRODUTO
-    if context.user_data.get("acao") == "novo":
-        df = carregar_estoque()
-        df = pd.concat([df, pd.DataFrame([{"produto": texto, "quantidade": 0}])])
-        salvar_estoque(df)
-        await update.message.reply_text("✅ Produto criado")
-        context.user_data.clear()
-        return
-
-    # ENTRADA / SAÍDA
-    if "produto" in context.user_data and "acao" in context.user_data:
-        try:
-            qtd = int(texto)
-        except:
-            await update.message.reply_text("Digite número válido")
+            await update.message.reply_text("✅ Produto cadastrado!", reply_markup=menu)
             return
 
-        produto = context.user_data["produto"]
-        acao = context.user_data["acao"]
-        turno = context.user_data.get("turno", "-")
+        # REMOVER PRODUTO
+        if acao == "remover":
+            produto = update.message.text.strip().lower()
+            df = pd.read_csv(ESTOQUE_FILE)
 
-        df = carregar_estoque()
+            if produto not in df["produto"].values:
+                await update.message.reply_text("Produto não encontrado.")
+                return
+
+            df = df[df["produto"] != produto]
+            df.to_csv(ESTOQUE_FILE, index=False)
+
+            await update.message.reply_text("❌ Produto removido!", reply_markup=menu)
+            return
+
+        # BLOQUEIO PARA NÃO ADMIN
+        if not is_admin(update):
+            return
+
+        dados = update.message.text.split()
+        produto = dados[0]
+        qtd = int(dados[1])
+
+        df = pd.read_csv(ESTOQUE_FILE)
+
+        if produto not in df["produto"].values:
+            await update.message.reply_text("Produto não existe.")
+            return
+
         idx = df[df["produto"] == produto].index[0]
 
         if acao == "entrada":
             df.at[idx, "quantidade"] += qtd
-            tipo = "entrada"
+            turno = "-"
         else:
+            turno = dados[2]
             df.at[idx, "quantidade"] -= qtd
-            tipo = "saida"
 
-        salvar_estoque(df)
+        df.to_csv(ESTOQUE_FILE, index=False)
 
-        salvar_log({
-            "data": datetime.now(),
+        log = pd.read_csv(LOG_FILE)
+        log = pd.concat([log, pd.DataFrame([{
+            "data": pd.Timestamp.now(),
+            "turno": turno,
             "produto": produto,
-            "quantidade": qtd,
-            "tipo": tipo,
-            "turno": turno
-        })
+            "quantidade": qtd
+        }])])
+        log.to_csv(LOG_FILE, index=False)
 
-        await update.message.reply_text("✅ Registrado")
-        context.user_data.clear()
+        await update.message.reply_text("✅ Registrado!", reply_markup=menu)
 
-# ================= RELATÓRIO =================
+    except Exception as e:
+        await update.message.reply_text(f"Erro: {e}")
+
 async def relatorio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not autorizado(update.message.chat_id):
+    df = pd.read_csv(LOG_FILE)
+
+    if df.empty:
+        await update.message.reply_text("Sem dados hoje.")
         return
 
-    df = pd.read_csv(LOG_FILE)
-    await update.message.reply_text(df.tail(20).to_string())
+    df["data"] = pd.to_datetime(df["data"])
+    hoje = pd.Timestamp.now().date()
+    df = df[df["data"].dt.date == hoje]
 
-# ================= HANDLERS =================
+    texto = "📊 RELATÓRIO DO DIA\n"
+
+    for turno in ["A", "B", "C"]:
+        texto += f"\nTurno {turno}:\n"
+        df_t = df[df["turno"] == turno]
+
+        for prod in df_t["produto"].unique():
+            qtd = df_t[df_t["produto"] == prod]["quantidade"].sum()
+            texto += f"{prod}: {qtd}\n"
+
+    await update.message.reply_text(texto)
+
+async def enviar_relatorio(context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=CHAT_ID, text="📊 Relatório automático ativo.")
+
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.Regex("Login"), login))
 app.add_handler(MessageHandler(filters.Regex("Estoque"), estoque))
 app.add_handler(MessageHandler(filters.Regex("Entrada"), entrada))
 app.add_handler(MessageHandler(filters.Regex("Saída"), saida))
-app.add_handler(MessageHandler(filters.Regex("Novo Produto"), novo))
-app.add_handler(MessageHandler(filters.Regex("Remover Produto"), remover))
+app.add_handler(MessageHandler(filters.Regex("Novo Produto"), novo_produto))
+app.add_handler(MessageHandler(filters.Regex("Remover Produto"), remover_produto))
 app.add_handler(MessageHandler(filters.Regex("Relatório"), relatorio))
-
-app.add_handler(CallbackQueryHandler(callback, pattern="^(entrada|saida|remover)\|"))
-app.add_handler(CallbackQueryHandler(callback_turno, pattern="^turno\|"))
-
 app.add_handler(MessageHandler(filters.TEXT, processar))
+
+app.job_queue.run_daily(enviar_relatorio, time(hour=22, minute=0))
 
 app.run_polling()
